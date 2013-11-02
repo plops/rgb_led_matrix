@@ -1,0 +1,93 @@
+===== LED-Matrix lisp-arduino-interface =====
+Unser Ziel ist, Animationen auf der einer 16x16 Matrix von LEDs mit WS2811 Treibern darzustellen.
+
+Ein Repo fuer den aktuellen Code ist auf [[https://github.com/plops/rgb_led_matrix]].
+
+Der folgende verkuerzte Aussschnitt soll nur einen groben Ueberblick geben.
+
+Der Arduino liest jedes Byte, dass er vom seriellen Port bekommt in einen Speicher. Das Byte mit dem Wert 254 hat eine besondere Funktion. Wenn es empfangen wird, wird ein interner Zaehler zurueckgesetzt, so dass das Bild geschrieben werden kann.
+<code c led-ctl.ino>
+#include "Adafruit_NeoPixel.h"
+#define PIN 6
+enum {
+  WIDTH=16,
+  HEIGHT=16,
+  N=WIDTH*HEIGHT*3
+};
+Adafruit_NeoPixel strip = Adafruit_NeoPixel(WIDTH * HEIGHT,
+                          PIN, NEO_GRB + NEO_KHZ800);
+
+void setup() {
+  strip.begin();
+  strip.show(); // Initialize all pixels to 'off'
+  Serial.begin(115200);
+  strip.setPixelColor(0, strip.Color(10,10,10));  
+  strip.show(); // Funktionstest: zeige einen einzigen Pixel an
+}
+
+int counter = 0;
+char buf[3*WIDTH*HEIGHT];
+
+void loop() {
+  int incomingByte = 0;
+  while((Serial.available() > 0) && (incomingByte != -1)) {
+    incomingByte = Serial.read();
+    if (incomingByte != -1) { // Lesefehler gibt -1
+      if(incomingByte == 254)
+        counter = 0;
+      else{
+        buf[counter] = incomingByte;
+        counter++;
+        if (counter >= N)
+          counter = 0;
+      }
+    }
+  }
+  if (counter >= N-1) {
+    for (int i = 0; i < WIDTH*HEIGHT; i++) {
+      strip.setPixelColor(i, strip.Color(buf[3*i], buf[3*i+1], buf[3*i+2]));
+    }
+    strip.show();
+  }
+}
+</code>
+
+Zum Experimentieren mit verschiedenen Bildern, habe ich Clozure Common Lisp auf dem Raspberry PI installiert. Die Installation wird hier beschrieben:
+[[http://www.informatimago.com/articles/raspberrypi/ccl-sur-qemu.html]]
+
+Der folgende Code oeffnet den seriellen Port zum Arduino, sendet das Byte 254 und dann 256*3 Bytes mit Bildinformationen (in diesem Fall werden zwei diagonale Linien angezeigt).
+
+<code lisp>
+(load "/home/pi/ccl/library/serial-streams.lisp")
+
+(defparameter *a*
+  (ccl::make-serial-stream "/dev/ttyUSB0"
+			   :format :binary
+			   :baud-rate 115200
+			   :parity nil
+			   :char-bits 8
+			   :stop-bits 1
+			   :flow-control nil))
+
+(let* ((a1 (make-array (* 3 256)  :element-type '(unsigned-byte 8)))
+       (a (make-array (list 16 16 3)  :element-type '(unsigned-byte 8)
+		      :displaced-to a1)))
+  (dotimes (c 3)
+    (dotimes (j 16)
+      (dotimes (i 16)
+	(let ((r (sqrt (+ (* i i) (* j j)))))
+	  (setf (aref a j i c) ;; x
+		(if (or (= i j) (= (- 16 i) j)) 34 0))))))
+  (write-byte 254 *a*)
+  (write-sequence a1 *a*)
+  nil)
+</code>
+== Diskussion ==
+Ab und zu hatte ich das Probleme, dass mein Lisp abgestuerzt ist. Ich vermute, dass das verwendete Raspbian zu viele Prozesse gestartet hat (ich hatte insbesonder XWindow, einen Browser und die java-basierte Arduino Entwicklungsumgebung auf). Dadurch war vielleicht der RAM knapp. Die Javaumgebung laesst sich leicht vermeiden, denn sie zeigt alle Aufrufe des AVR Compilers an und eine entsprechende Makefile kann leicht erzeugt werden.
+
+Ich habe auch Lisp Code geschrieben um einen 16x16 Font von einem PGM Bild einzulesen.
+Die Bildrate ist (gefuehlt) 4 Hz, also nicht genug um Scrollenden Text anzuzeigen.
+
+Das naechste Mal werde ich vermutlich einen weiteren Modus auf dem Arduino implementieren, um Spalten mit monochromen Bilddaten ueber die Matrix zu schieben. Auf diese Weise sollte fluessiger Text moeglich werden.
+
+Wenn der Lisp Code funktioniert und zufriedenstellende Animationen liefter, kann die Logik fuer vereinfachtes Deployment in ein C-Programm uebertragen werden.
